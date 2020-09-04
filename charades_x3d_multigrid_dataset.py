@@ -174,12 +174,15 @@ class Charades(data_utl.Dataset):
         vid, label, dur, nf = self.data[index]
 
         num_f, width, height = self.long_cycles[long_cycle_state]
-        if short_cycle_state == 1:
-          width = int(width/np.sqrt(2))
-          height = int(height/np.sqrt(2))
-        elif short_cycle_state == 2:
+        stats = (num_f, width//2, int(width/np.sqrt(2)), width)
+
+        if short_cycle_state == 0:
           width = width//2
           height = height//2
+        elif short_cycle_state == 1:
+          width = int(width/np.sqrt(2))
+          height = int(height/np.sqrt(2))
+
 
         t_stride = random.randint(1,1*(self.num_f/num_f)) # 2 times 80 ??
         load_num_f = num_f * t_stride
@@ -197,7 +200,8 @@ class Charades(data_utl.Dataset):
             imgs = self.transforms(imgs)
 
         #print(imgs.shape, label.shape)
-        return video_to_tensor(imgs), torch.from_numpy(label), long_cycle_state
+
+        return video_to_tensor(imgs), torch.from_numpy(label), long_cycle_state, stats
 
     def __len__(self):
         return len(self.data)

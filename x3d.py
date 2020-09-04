@@ -10,7 +10,7 @@ def conv3x3x3(in_planes, out_planes, stride=1):
     return nn.Conv3d(in_planes,
                      out_planes,
                      kernel_size=3,
-                     stride=stride,
+                     stride=(1,stride,stride),
                      padding=1,
                      bias=False,
                      groups=in_planes
@@ -21,7 +21,7 @@ def conv1x1x1(in_planes, out_planes, stride=1):
     return nn.Conv3d(in_planes,
                      out_planes,
                      kernel_size=1,
-                     stride=stride,
+                     stride=(1,stride,stride),
                      bias=False)
 
 
@@ -60,12 +60,14 @@ class Bottleneck(nn.Module):
         out = self.bn3(out)
 
         # Squeeze-and-Excitation
+
         se_w = self.global_pool(out).view(-1, out.shape[1])
         se_w = self.fc1(se_w)
         se_w = self.swish(se_w)
         se_w = self.fc2(se_w)
         se_w = self.sigmoid(se_w)
         out = out * se_w.view(-1, out.shape[1], 1, 1, 1)
+
 
         if self.downsample is not None:
             residual = self.downsample(x)
@@ -82,26 +84,26 @@ class ResNet(nn.Module):
                  block,
                  layers,
                  block_inplanes,
-                 gamma_t,
                  n_input_channels=3,
                  conv1_t_size=7,
                  conv1_t_stride=1,
-                 no_max_pool=False,
+                 #no_max_pool=True,
                  shortcut_type='B',
                  widen_factor=1.0,
+                 dropout=0.7,
                  n_classes=400):
         super(ResNet, self).__init__()
 
         block_inplanes = [(int(x * widen_factor),int(y * widen_factor)) for x,y in block_inplanes]
 
         self.in_planes = block_inplanes[0][1]
-        self.no_max_pool = no_max_pool
-        self.gamma_t = gamma_t
+        #self.no_max_pool = no_max_pool
+        #self.gamma_t = gamma_t
 
         self.conv1_s = nn.Conv3d(n_input_channels,
                                self.in_planes,
                                kernel_size=(1, 3, 3),
-                               stride=(1, 1, 1),
+                               stride=(1, 2, 2),
                                padding=(0, 1, 1),
                                bias=False)
         self.conv1_t = nn.Conv3d(self.in_planes,
@@ -113,7 +115,7 @@ class ResNet(nn.Module):
                                groups=self.in_planes)
         self.bn1 = nn.BatchNorm3d(self.in_planes)
         self.swish = nn.Hardswish()
-        self.maxpool = nn.MaxPool3d(kernel_size=3, stride=2, padding=1)
+        #self.maxpool = nn.MaxPool3d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block,
                                        block_inplanes[0],
                                        layers[0],
@@ -141,9 +143,10 @@ class ResNet(nn.Module):
                                padding=(0, 0, 0),
                                bias=False)
         self.bn5 = nn.BatchNorm3d(block_inplanes[3][0])
-        self.avgpool = nn.AdaptiveAvgPool3d((self.gamma_t, 1, 1))
+        self.avgpool = nn.AdaptiveAvgPool3d((None, 1, 1))
         self.fc1 = nn.Linear(block_inplanes[3][0], 2048)
         self.fc2 = nn.Linear(2048, n_classes)
+        self.dropout = nn.Dropout(dropout)
 
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -194,8 +197,8 @@ class ResNet(nn.Module):
         x = self.conv1_t(x)
         x = self.bn1(x)
         x = self.swish(x)
-        if not self.no_max_pool:
-            x = self.maxpool(x)
+        #if not self.no_max_pool:
+        #    x = self.maxpool(x)
 
         x = self.layer1(x)
         x = self.layer2(x)
@@ -206,12 +209,17 @@ class ResNet(nn.Module):
         x = self.bn5(x)
         x = self.swish(x)
 
+        # *** for localization, no pool in Temporal dim ***
+        #b,c,t,h,w = x.shape
+        #x = self.avgpool(x.view(b,c*t,h,w)).view(b,c,t,1,1)
         x = self.avgpool(x)
 
         #x = x.view(x.size(0), -1)
-        x = x.squeeze(4).squeeze(3).permute(0,2,1) # B T C *** for localization, no pool in Temporal dim ***
+        x = x.squeeze(4).squeeze(3).permute(0,2,1) # B T C
 
         x = self.fc1(x)
+        x = self.swish(x)
+        x = self.dropout(x)
         x = self.fc2(x)
 
         x = x.permute(0,2,1) # B C T
@@ -234,7 +242,7 @@ def get_blocks(version):
 
 def generate_model(x3d_version, **kwargs):
 
-    gamma_t = {'S':13, 'M':16, 'XL':16}[x3d_version]
-    model = ResNet(Bottleneck, get_blocks(x3d_version), get_inplanes(x3d_version), gamma_t=gamma_t, **kwargs)
+    #gamma_t = {'S':13, 'M':16, 'XL':16}[x3d_version]
+    model = ResNet(Bottleneck, get_blocks(x3d_version), get_inplanes(x3d_version), **kwargs)
 
     return model

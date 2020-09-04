@@ -41,11 +41,10 @@ from charades_x3d_dataset import Charades as Dataset_Full
 import warnings
 warnings.filterwarnings("ignore")
 
-X3D_VERSION = 'M'
-
-def run(init_lr=0.001, max_steps=64e3, mode='rgb', root='/nfs/bigneuron/add_disk0/kumarak/Charades_v1_rgb',
-        train_split='./data/charades.json', batch_size=8*5, save_model=''):
+def run(init_lr=0.002, max_steps=64e3, mode='rgb', root='/nfs/bigneuron/add_disk0/kumarak/Charades_v1_rgb',
+        train_split='./data/charades.json', batch_size=8*4, save_model=''):
     # setup dataset
+    X3D_VERSION = 'M'
     crop_size = {'S':160, 'M':224, 'XL':312}[X3D_VERSION]
     resize_size = {'S':180, 'M':256, 'XL':360}[X3D_VERSION]
     gamma_tau = {'S':6, 'M':5, 'XL':5}[X3D_VERSION]
@@ -56,10 +55,10 @@ def run(init_lr=0.001, max_steps=64e3, mode='rgb', root='/nfs/bigneuron/add_disk
     test_transforms = transforms.Compose([videotransforms.CenterCrop(crop_size)])
 
     dataset = Dataset(train_split, 'training', root, mode, train_transforms, resize_size=resize_size)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True)
 
     val_dataset = Dataset_Full(train_split, 'testing', root, mode, test_transforms, resize_size=resize_size)
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=8, pin_memory=True)
+    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=16, pin_memory=True)
 
     dataloaders = {'train': dataloader, 'val': val_dataloader}
     datasets = {'train': dataset, 'val': val_dataset}
@@ -73,30 +72,32 @@ def run(init_lr=0.001, max_steps=64e3, mode='rgb', root='/nfs/bigneuron/add_disk
         #save_model = 'models/flow_temp_'
     else:
         x3d = resnet_x3d.generate_model(x3d_version=X3D_VERSION, n_classes=157, n_input_channels=3)
-        #x3d.load_state_dict(torch.load('models/rgb_imagenet.pt'))
-        save_model = 'models/x3d_rgb_'
+        x3d.load_state_dict(torch.load('models/x3d_rgb_v2_adam_001600.pt'))
+        save_model = 'models/x3d_rgb_v2_adam_'
     #x3d.replace_logits(157)
-    #x3d.load_state_dict(torch.load('/ssd/models/000920.pt'))
+    #x3d.load_state_dict(torch.load('models/x3d_rgb_v2_008400.pt'))
 
     #flops, params = profile(x3d, inputs=torch.randn(1,1, 3, 80//gamma_tau, crop_size, crop_size))
     #print(flops, params)
 
     x3d.cuda()
 
-    summary(x3d, (3, 80//gamma_tau, crop_size, crop_size))
+    #summary(x3d, (3, 80//gamma_tau, crop_size, crop_size))
+    #summary(x3d, (3, 80, crop_size, crop_size))
 
     x3d = nn.DataParallel(x3d)
     print('model loaded')
 
     lr = init_lr
-    #optimizer = optim.SGD(x3d.parameters(), lr=lr, momentum=0.9, weight_decay=0.0000001)
-    optimizer = optim.Adam(x3d.parameters(), lr=lr, weight_decay=0.0000001)
+    #optimizer = optim.SGD(x3d.parameters(), lr=lr, momentum=0.9, weight_decay=1e-5)
+    optimizer = optim.Adam(x3d.parameters(), lr=lr, weight_decay=1e-7)
     #lr_sched = optim.lr_scheduler.MultiStepLR(optimizer, [300, 1000])
+    lr_sched = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.1, min_lr=1e-5, verbose=True)
 
 
     num_steps_per_update = 4 * 1 # accum gradient
-    steps = 0
-    epochs = 0
+    steps = 1600 #4900
+    epochs = 26 #101
     val_apm = APMeter()
     tr_apm = APMeter()
     # train it
@@ -105,7 +106,7 @@ def run(init_lr=0.001, max_steps=64e3, mode='rgb', root='/nfs/bigneuron/add_disk
         print ('-' * 10)
 
         # Each epoch has a training and validation phase
-        for phase in 20*['train']+['val']:
+        for phase in 10*['train']+['val']:
             if phase == 'train':
                 x3d.train(True)
                 epochs += 1
@@ -122,7 +123,7 @@ def run(init_lr=0.001, max_steps=64e3, mode='rgb', root='/nfs/bigneuron/add_disk
 
             # Iterate over data.
             print(phase)
-            for data in dataloaders[phase]:
+            for data in Bar(dataloaders[phase]):
                 num_iter += 1
                 # get the inputs
                 inputs, labels = data
@@ -180,8 +181,10 @@ def run(init_lr=0.001, max_steps=64e3, mode='rgb', root='/nfs/bigneuron/add_disk
             if phase == 'val':
                 val_map = val_apm.value().mean()
                 val_apm.reset()
+                lr_sched.step(tot_loss)
                 print (' Epoch:{} {} Loc Loss: {:.4f} Cls Loss: {:.4f} Tot Loss: {:.4f} mAP: {:.4f}'.format(epochs, phase,
                     tot_loc_loss/num_iter, tot_cls_loss/num_iter, (tot_loss*num_steps_per_update)/num_iter, val_map))
+                tot_loss = tot_loc_loss = tot_cls_loss = 0.
 
 
 

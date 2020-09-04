@@ -26,12 +26,13 @@ class RandomEpochSampler(sampler.RandomSampler):
 
 class CycleBatchSampler(sampler.BatchSampler):
 
-  def __init__(self, sampler, batch_size, drop_last, schedule, long_cycle_bs_scale):
+  def __init__(self, sampler, batch_size, drop_last, schedule, cur_iterations, long_cycle_bs_scale):
     super(CycleBatchSampler, self).__init__(sampler, batch_size, drop_last)
 
     # long cycles -> step-wise.
     # input of [last_step_1, last_step_2, ...]
     self.schedule = schedule
+    self.cur_iterations = cur_iterations
     # e.g., [8,4,2,1] for the 4 shape
     self.long_cycle_bs_scale = long_cycle_bs_scale
 
@@ -47,10 +48,10 @@ class CycleBatchSampler(sampler.BatchSampler):
     phase = 1
     phase_steps = self.schedule[phase] / len(self.long_cycle_bs_scale)
     long_cycle_index = 0
-    iter_offset = 0
+    iter_offset = self.cur_iterations # 0
 
     batch_size = self.batch_size * self.long_cycle_bs_scale[long_cycle_index]
-    short_cycle_batch = batch_size
+    short_cycle_batch = batch_size * 4
     batch = []
     for idx in self.sampler:
       batch.append((idx, long_cycle_index))
@@ -80,11 +81,11 @@ class CycleBatchSampler(sampler.BatchSampler):
           batch_size = (self.batch_size *
                         self.long_cycle_bs_scale[long_cycle_index])
         if iteration_counter % 3 == 0:
-          short_cycle_batch = batch_size
+          short_cycle_batch = batch_size * 4
         if iteration_counter % 3 == 1:
           short_cycle_batch = batch_size * 2
         if iteration_counter % 3 == 2:
-          short_cycle_batch = batch_size * 4
+          short_cycle_batch = batch_size
 
 
     if len(batch) > 0 and not self.drop_last:

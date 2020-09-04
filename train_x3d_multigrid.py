@@ -31,12 +31,13 @@ import videotransforms
 
 import numpy as np
 from barbar import Bar
+import pkbar
 from apmeter import APMeter
 
 import x3d as resnet_x3d
 
 from charades_x3d_multigrid_dataset import Charades as Dataset
-from charades_x3d_multigrid_dataset import Charades as Dataset_Full
+from charades_x3d_multigrid_dataset_full import Charades as Dataset_Full
 
 import cycle_batch_sampler as cbs
 import dataloader as DL
@@ -46,10 +47,10 @@ warnings.filterwarnings("ignore")
 
 X3D_VERSION = 'M'
 
-def setup_data(root, split, mode, batch_size, epochs, crop_size, resize_size, num_frames):
+def setup_data(root, split, mode, batch_size, epochs, cur_iterations, crop_size, resize_size, num_frames):
 
   # base BS of 64 -> ~250 iterations per epoch for kin
-  steps_per_epoch = 8000/batch_size
+  steps_per_epoch = 8000//batch_size
   num_iterations = int(epochs * steps_per_epoch)
   schedule = [0, int(0.6*num_iterations), int(0.85*num_iterations), num_iterations]
   long_cycle = [8, 4, 2, 1]
@@ -67,23 +68,30 @@ def setup_data(root, split, mode, batch_size, epochs, crop_size, resize_size, nu
 
   batch_sampler = cbs.CycleBatchSampler(sampler, batch_size, drop_last,
                                         schedule=schedule,
+                                        cur_iterations = cur_iterations,
                                         long_cycle_bs_scale=long_cycle)
-  dataloader = DL.DataLoader(dataset, num_workers=12, batch_sampler=batch_sampler, pin_memory=True)
+  dataloader = DL.DataLoader(dataset, num_workers=8, batch_sampler=batch_sampler, pin_memory=True)
 
   return dataloader, dataset, schedule[1:]
 
 
 def run(init_lr=0.1, max_epochs=100, mode='rgb', root='/data/add_disk0/kumarak/Charades_v1_rgb',
-        train_split='./data/charades.json', batch_size=8*2, save_model=''):
+        train_split='./data/charades.json', batch_size=8*1, save_model=''):
     # setup dataset
     crop_size = {'S':160, 'M':224, 'XL':312}[X3D_VERSION]
     resize_size = {'S':180, 'M':256, 'XL':360}[X3D_VERSION]
     gamma_tau = {'S':6, 'M':5, 'XL':5}[X3D_VERSION]
     num_frames = 80
 
+    steps = 2400
+    epochs = 9
+    num_steps_per_update = 4 #4 * 1 # accum gradient
+    cur_iterations = steps * num_steps_per_update
+    steps_per_epoch = 8000//batch_size
+
     test_transforms = None
 
-    dataloader, dataset, lr_schedule = setup_data(root, train_split, mode, batch_size, max_epochs, crop_size, resize_size, num_frames)
+    dataloader, dataset, lr_schedule = setup_data(root, train_split, mode, batch_size, max_epochs, cur_iterations, crop_size, resize_size, num_frames)
 
     val_dataset = Dataset_Full(train_split, 'testing', root, mode, test_transforms, resize_size=resize_size)
     val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1, shuffle=True, num_workers=8, pin_memory=True)
@@ -102,8 +110,8 @@ def run(init_lr=0.1, max_epochs=100, mode='rgb', root='/data/add_disk0/kumarak/C
         #save_model = 'models/flow_temp_'
     else:
         x3d = resnet_x3d.generate_model(x3d_version=X3D_VERSION, n_classes=157, n_input_channels=3)
-        #x3d.load_state_dict(torch.load('models/rgb_imagenet.pt'))
-        save_model = 'models/x3d_multigrid_rgb_'
+        x3d.load_state_dict(torch.load('models/x3d_v2_multigrid_rgb_002400.pt'))
+        save_model = 'models/x3d_v2_multigrid_rgb_'
     #x3d.replace_logits(157)
     #x3d.load_state_dict(torch.load('/ssd/models/000920.pt'))
 
@@ -124,19 +132,17 @@ def run(init_lr=0.1, max_epochs=100, mode='rgb', root='/data/add_disk0/kumarak/C
     lr_sched = optim.lr_scheduler.MultiStepLR(optimizer, lr_schedule)
 
 
-    num_steps_per_update = 4 #4 * 1 # accum gradient
-    steps = 0
-    epochs = 0
     last_long = -1
     val_apm = APMeter()
     tr_apm = APMeter()
     # train it
     while epochs < max_epochs:#for epoch in range(num_epochs):
-        print ('Step {}/{}'.format(steps, epochs))
+        print ('Step {} Epoch {}'.format(steps, epochs))
         print ('-' * 10)
 
         # Each epoch has a training and validation phase
-        for phase in 5*['train']+['val']:
+        for phase in ['val']+5*['train']:
+            bar = pkbar.Pbar(name='update: ', target=steps_per_epoch)
             if phase == 'train':
                 x3d.train(True)
                 epochs += 1
@@ -153,11 +159,14 @@ def run(init_lr=0.1, max_epochs=100, mode='rgb', root='/data/add_disk0/kumarak/C
 
             # Iterate over data.
             print(phase)
-            for data in dataloaders[phase]:
+            for i,data in enumerate(dataloaders[phase]):
                 num_iter += 1
                 # get the inputs
+                bar.update(i)
                 if phase == 'train':
-                    inputs, labels, long_ind = data
+                    if i>steps_per_epoch:
+                        break
+                    inputs, labels, long_ind, stats = data
                     #print(inputs.shape)
                     long_ind = long_ind[0].item()
                     if long_ind != last_long:
@@ -165,8 +174,10 @@ def run(init_lr=0.1, max_epochs=100, mode='rgb', root='/data/add_disk0/kumarak/C
                         for g in optimizer.param_groups:
                           g['lr'] *= long_cycle_lr_scale[long_ind]
                           print('LR: ', g['lr'])
+                          bs = batch_size * [8,4,2,1][long_ind]; bs = [bs*j for j in [4,2,1]]
+                          print('LR {} Frames {} BS ({},{},{}) W/H ({},{},{})'.format(g['lr'], stats[0][0], bs[0], bs[1], bs[2], stats[1][0], stats[2][0], stats[3][0]))
                 else:
-                    inputs, labels = data
+                    inputs, labels, _ = data
 
                 # Gamma_tau sampling ****** MAY NOT BE GOOD FOR LOCALIZATION TASKS ******
                 inputs = inputs[:,:,::gamma_tau,:,:]
