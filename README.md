@@ -20,7 +20,7 @@ This repository contains a PyTorch implementation for "X3D: Expanding Architectu
 
 ### Reference
 
-If you find our work useful, please consider citing the original authors:
+If you find this work useful, please consider citing the original authors:
 ```
 @inproceedings{feichtenhofer2020x3d,
   title={X3D: Expanding Architectures for Efficient Video Recognition},
