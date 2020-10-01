@@ -1,6 +1,5 @@
-# Source: https://raw.githubusercontent.com/kenshohara/3D-ResNets-PyTorch/master/datasets/activitynet.py
-
 import torch
+import torchvision
 import torch.utils.data as data
 from PIL import Image
 import os
@@ -13,7 +12,6 @@ import random
 
 import cycle_batch_sampler as cbs
 
-#from utils.utils import load_value_file
 
 def load_value_file(file_path):
     with open(file_path, 'r') as input_file:
@@ -22,7 +20,6 @@ def load_value_file(file_path):
 
 
 def pil_loader(path):
-    # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
     with open(path, 'rb') as f:
         with Image.open(f) as img:
             return img.convert('RGB')
@@ -38,6 +35,7 @@ def accimage_loader(path):
 
 
 def get_default_image_loader():
+    torchvision.set_image_backend('accimage')
     from torchvision import get_image_backend
     if get_image_backend() == 'accimage':
         return accimage_loader
@@ -53,7 +51,6 @@ def video_loader(video_dir_path, frame_indices, image_loader):
             video.append(image_loader(image_path))
         else:
             return video
-
     return video
 
 
@@ -81,11 +78,8 @@ def get_video_names_and_annotations(data, subset):
     video_names = []
     annotations = []
 
-    #print(data.keys())
-    for key, value in data.items(): #['database']
-        #print(value.keys())
+    for key, value in data.items():
         this_subset = value['subset']
-        #print(key,value['subset'],value['annotations']['label'], subset)
         if this_subset == subset:
 
             if subset == 'testing':
@@ -93,7 +87,6 @@ def get_video_names_and_annotations(data, subset):
             elif subset == 'train':
                 st = int(value['annotations']['segment'][0])
                 end = int(value['annotations']['segment'][1])
-                #print(key,value['subset'],value['annotations']['label'])
                 label = value['annotations']['label'].replace(' ','_')
                 video_names.append('{}/{}_{}_{}'.format(label, key, str(st).zfill(6), str(end).zfill(6)))
                 annotations.append(value['annotations'])
@@ -105,11 +98,11 @@ def get_video_names_and_annotations(data, subset):
     return video_names, annotations
 
 
-def make_dataset(root_path, annotation_path, subset, n_samples_for_each_video,
-                 sample_duration):
+def make_dataset(root_path, annotation_path, class_labels, subset, n_samples_for_each_video, sample_duration):
+
     data = load_annotation_data(annotation_path)
     video_names, annotations = get_video_names_and_annotations(data, subset)
-    class_to_idx = get_class_labels('/nfs/bigneuron/add_disk0/kumarak/Kinetics/kinetics-downloader/dataset/kinetics400/labels.txt')
+    class_to_idx = get_class_labels(class_labels)
     idx_to_class = {}
     for name, label in class_to_idx.items():
         idx_to_class[label] = name
@@ -121,23 +114,18 @@ def make_dataset(root_path, annotation_path, subset, n_samples_for_each_video,
     else:
         dataset = []
         na = 0
-        #print(video_names)
         for i in range(len(video_names)):
             if i % 1000 == 0:
                 print('dataset loading [{}/{}] N/A {}'.format(i, len(video_names), na))
 
 
             video_path = os.path.join(root_path, video_names[i])
-            #print(video_path)
             if not os.path.exists(video_path):
                 na += 1
                 continue
 
-            #n_frames_file_path = os.path.join(video_path, 'n_frames')
-            #n_frames = int(load_value_file(n_frames_file_path))
             n_frames = len(os.listdir(video_path))
-            #print(video_names[i],n_frames)
-            if n_frames <= 64+1:
+            if n_frames <= 80+1:
                 na += 1
                 continue
 
@@ -147,7 +135,7 @@ def make_dataset(root_path, annotation_path, subset, n_samples_for_each_video,
                 'video': video_path,
                 'segment': [begin_t, end_t],
                 'n_frames': n_frames,
-                'video_id': video_names[i].split('/')[1] #video_names[i][:-14].split('/')[1]
+                'video_id': video_names[i].split('/')[1]
             }
             if len(annotations) != 0:
                 sample['label'] = class_to_idx[annotations[i]['label']]
@@ -194,6 +182,7 @@ class Kinetics(data.Dataset):
     def __init__(self,
                  root_path,
                  annotation_path,
+                 class_labels,
                  subset,
                  n_samples_for_each_video=1,
                  spatial_transform=None,
@@ -203,7 +192,7 @@ class Kinetics(data.Dataset):
                  crop_size = 224,
                  get_loader=get_default_video_loader):
         self.data, self.class_names = make_dataset(
-            root_path, annotation_path, subset, n_samples_for_each_video,
+            root_path, annotation_path, class_labels, subset, n_samples_for_each_video,
             sample_duration)
 
         self.spatial_transform = spatial_transform
@@ -214,10 +203,13 @@ class Kinetics(data.Dataset):
         self.crop_size = crop_size
 
         self.long_cycles = [
-          (self.sample_duration//4, int(self.crop_size/np.sqrt(2))),
-          (self.sample_duration//2, int(self.crop_size/np.sqrt(2))),
+          (self.sample_duration//4, int(np.floor(self.crop_size/np.sqrt(2)))),
+          (self.sample_duration//2, int(np.floor(self.crop_size/np.sqrt(2)))),
           (self.sample_duration//2, self.crop_size),
           (self.sample_duration, self.crop_size)]
+
+        #print(torchvision.__version__, torchvision.version.cuda)
+        #print(torch.__version__, torch.version.cuda)
 
     def __getitem__(self, index):
         """
@@ -230,27 +222,31 @@ class Kinetics(data.Dataset):
         iteration = index[0]
         index, long_cycle_state = index[1]
 
-        # get short cycle for iter
-        short_cycle_state = iteration % 3
-
         sample_duration, crop_size = self.long_cycles[long_cycle_state]
-        stats = (sample_duration, crop_size//2, int(crop_size/np.sqrt(2)), crop_size)
+        stats = (sample_duration, crop_size//2, int(np.floor(crop_size/np.sqrt(2))), crop_size)
 
-        if short_cycle_state == 0:
-          crop_size = crop_size//2
-        elif short_cycle_state == 1:
-          crop_size = int(crop_size/np.sqrt(2))
+        if long_cycle_state in [0,1]:
+            short_cycle_state = iteration % 2
+            if short_cycle_state == 0:
+              crop_size = int(np.floor(crop_size/np.sqrt(2)))
+        else:
+            short_cycle_state = iteration % 3
+            if short_cycle_state == 0:
+              crop_size = crop_size//2
+            elif short_cycle_state == 1:
+              crop_size = int(np.floor(crop_size/np.sqrt(2)))
 
 
         path = self.data[index]['video']
 
         frame_indices = self.data[index]['frame_indices']
+
         if self.temporal_transform is not None:
-            t_stride = random.randint(1,max(1,self.sample_duration//sample_duration-1))
-            frame_indices = self.temporal_transform(frame_indices, t_stride)
-        #print(path,frame_indices)
+            t_stride = random.randint(1,max(1,self.sample_duration//sample_duration))
+            frame_indices = self.temporal_transform(frame_indices, t_stride, sample_duration)
+
         clip = self.loader(path, frame_indices)
-        #print(path.split('/')[-1],len(clip))
+
         if self.spatial_transform is not None:
             self.spatial_transform.randomize_parameters(crop_size)
             clip = [self.spatial_transform(img) for img in clip]
@@ -260,7 +256,6 @@ class Kinetics(data.Dataset):
         if self.target_transform is not None:
             target = self.target_transform(target)
 
-        #print(clip.shape, target, stats)
         return clip, target, long_cycle_state, stats
 
     def __len__(self):

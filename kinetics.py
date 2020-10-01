@@ -1,6 +1,5 @@
-# Source: https://raw.githubusercontent.com/kenshohara/3D-ResNets-PyTorch/master/datasets/activitynet.py
-
 import torch
+import torchvision
 import torch.utils.data as data
 from PIL import Image
 import os
@@ -10,7 +9,6 @@ import json
 import copy
 import numpy as np
 
-#from utils.utils import load_value_file
 
 def load_value_file(file_path):
     with open(file_path, 'r') as input_file:
@@ -19,7 +17,6 @@ def load_value_file(file_path):
 
 
 def pil_loader(path):
-    # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
     with open(path, 'rb') as f:
         with Image.open(f) as img:
             return img.convert('RGB')
@@ -35,6 +32,7 @@ def accimage_loader(path):
 
 
 def get_default_image_loader():
+    torchvision.set_image_backend('accimage')
     from torchvision import get_image_backend
     if get_image_backend() == 'accimage':
         return accimage_loader
@@ -50,7 +48,6 @@ def video_loader(video_dir_path, frame_indices, image_loader):
             video.append(image_loader(image_path))
         else:
             return video
-
     return video
 
 
@@ -78,11 +75,8 @@ def get_video_names_and_annotations(data, subset):
     video_names = []
     annotations = []
 
-    #print(data.keys())
-    for key, value in data.items(): #['database']
-        #print(value.keys())
+    for key, value in data.items():
         this_subset = value['subset']
-        #print(key,value['subset'],value['annotations']['label'], subset)
         if this_subset == subset:
 
             if subset == 'testing':
@@ -90,7 +84,6 @@ def get_video_names_and_annotations(data, subset):
             elif subset == 'train':
                 st = int(value['annotations']['segment'][0])
                 end = int(value['annotations']['segment'][1])
-                #print(key,value['subset'],value['annotations']['label'])
                 label = value['annotations']['label'].replace(' ','_')
                 video_names.append('{}/{}_{}_{}'.format(label, key, str(st).zfill(6), str(end).zfill(6)))
                 annotations.append(value['annotations'])
@@ -102,11 +95,11 @@ def get_video_names_and_annotations(data, subset):
     return video_names, annotations
 
 
-def make_dataset(root_path, annotation_path, subset, n_samples_for_each_video,
-                 sample_duration):
+def make_dataset(root_path, annotation_path, class_labels, subset, n_samples_for_each_video, sample_duration):
+
     data = load_annotation_data(annotation_path)
     video_names, annotations = get_video_names_and_annotations(data, subset)
-    class_to_idx = get_class_labels('/nfs/bigneuron/add_disk0/kumarak/Kinetics/kinetics-downloader/dataset/kinetics400/labels.txt')
+    class_to_idx = get_class_labels(class_labels)
     idx_to_class = {}
     for name, label in class_to_idx.items():
         idx_to_class[label] = name
@@ -118,22 +111,16 @@ def make_dataset(root_path, annotation_path, subset, n_samples_for_each_video,
     else:
         dataset = []
         na = 0
-        #print(video_names)
         for i in range(len(video_names)):
             if i % 1000 == 0:
                 print('dataset loading [{}/{}] N/A {}'.format(i, len(video_names), na))
 
-
             video_path = os.path.join(root_path, video_names[i])
-            #print(video_path)
             if not os.path.exists(video_path):
                 na += 1
                 continue
 
-            #n_frames_file_path = os.path.join(video_path, 'n_frames')
-            #n_frames = int(load_value_file(n_frames_file_path))
             n_frames = len(os.listdir(video_path))
-            #print(video_names[i],n_frames)
             if n_frames <= 80+1:
                 na += 1
                 continue
@@ -144,7 +131,7 @@ def make_dataset(root_path, annotation_path, subset, n_samples_for_each_video,
                 'video': video_path,
                 'segment': [begin_t, end_t],
                 'n_frames': n_frames,
-                'video_id': video_names[i].split('/')[1] #video_names[i][:-14].split('/')[1]
+                'video_id': video_names[i].split('/')[1]
             }
             if len(annotations) != 0:
                 sample['label'] = class_to_idx[annotations[i]['label']]
@@ -191,21 +178,29 @@ class Kinetics(data.Dataset):
     def __init__(self,
                  root_path,
                  annotation_path,
+                 class_labels,
                  subset,
                  n_samples_for_each_video=1,
                  spatial_transform=None,
                  temporal_transform=None,
                  target_transform=None,
                  sample_duration=16,
+                 gamma_tau=5,
+                 crops=10,
                  get_loader=get_default_video_loader):
         self.data, self.class_names = make_dataset(
-            root_path, annotation_path, subset, n_samples_for_each_video,
+            root_path, annotation_path, class_labels, subset, n_samples_for_each_video,
             sample_duration)
 
         self.spatial_transform = spatial_transform
         self.temporal_transform = temporal_transform
         self.target_transform = target_transform
         self.loader = get_loader()
+        self.gamma_tau = gamma_tau
+        self.crops = crops
+        self.sample_duration = sample_duration
+        self.frames = sample_duration//gamma_tau
+
 
     def __getitem__(self, index):
         """
@@ -217,22 +212,31 @@ class Kinetics(data.Dataset):
         path = self.data[index]['video']
 
         frame_indices = self.data[index]['frame_indices']
-        if self.temporal_transform is not None:
-            frame_indices = self.temporal_transform(frame_indices)
-        #print(len(frame_indices))
+        #if self.temporal_transform is not None:
+        #    frame_indices = self.temporal_transform(frame_indices)
+
+        # FOR MULTI-CROP TESTING
+        frame_indices = frame_indices[::self.gamma_tau]
+        step = int((len(frame_indices) - 1 - self.frames)//(self.crops-1))
+
         clip = self.loader(path, frame_indices)
-        #print(path.split('/')[-1],len(clip))
         if self.spatial_transform is not None:
             self.spatial_transform.randomize_parameters()
             clip = [self.spatial_transform(img) for img in clip]
-        clip = torch.stack(clip, 0).permute(1, 0, 2, 3)
+        clip = torch.stack(clip, 0).permute(1, 0, 2, 3) # T C H W --> C T H W
+
+        if step == 0:
+            clips = [clip[:,:self.frames,...] for i in range(self.crops)]
+            clips = torch.stack(clips, 0)
+        else:
+            clips = [clip[:,i:i+self.frames,...] for i in range(0, step*self.crops, step)]
+            clips = torch.stack(clips, 0)
 
         target = self.data[index]
         if self.target_transform is not None:
             target = self.target_transform(target)
 
-        #print(clip.shape, target)
-        return clip, target
+        return clips, target
 
     def __len__(self):
         return len(self.data)

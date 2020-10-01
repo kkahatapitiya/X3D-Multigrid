@@ -4,6 +4,7 @@ import numbers
 import collections
 import numpy as np
 import torch
+import copy
 
 from PIL import Image, ImageOps
 try:
@@ -193,6 +194,86 @@ class CenterCrop(object):
     def randomize_parameters(self, c_size=0):
         pass
 
+
+
+class CenterCropScaled(object):
+    """Crops the given PIL.Image at the center.
+    Args:
+        size (sequence or int): Desired output size of the crop. If size is an
+            int instead of sequence like (h, w), a square crop (size, size) is
+            made.
+    """
+
+    def __init__(self, size, interpolation=Image.BILINEAR):
+        if isinstance(size, numbers.Number):
+            self.size = (int(size), int(size))
+        else:
+            self.size = size
+        self.interpolation = interpolation
+
+    def __call__(self, img):
+        """
+        Args:
+            img (PIL.Image): Image to be cropped.
+        Returns:
+            PIL.Image: Cropped image.
+        """
+        crop_size = min(img.size[0], img.size[1])
+        w, h = img.size
+        x1 = int(round((w - crop_size) / 2.))
+        y1 = int(round((h - crop_size) / 2.))
+
+        img = img.crop((x1, y1, x1 + crop_size, y1 + crop_size))
+
+        return img.resize(self.size, self.interpolation)
+
+    def randomize_parameters(self, c_size=0):
+        pass
+
+'''
+class CenterCropScaledMultiple(object):
+    """Crops the given PIL.Image at the center.
+    Args:
+        size (sequence or int): Desired output size of the crop. If size is an
+            int instead of sequence like (h, w), a square crop (size, size) is
+            made.
+    """
+
+    def __init__(self, size, crops, interpolation=Image.BILINEAR):
+        if isinstance(size, numbers.Number):
+            self.size = (int(size), int(size))
+        else:
+            self.size = size
+        self.interpolation = interpolation
+        self.crops = crops
+
+    def __call__(self, img):
+        """
+        Args:
+            img (PIL.Image): Image to be cropped.
+        Returns:
+            PIL.Image: Cropped image.
+        """
+        crop_size = min(img.size[0], img.size[1])
+        w, h = img.size
+        x1 = int(round((w - crop_size) / float(self.crops+1)))
+        y1 = int(round((h - crop_size) / float(self.crops+1)))
+
+        imgs=[]
+        print(img.size, x1, y1)
+        for i in range(self.crops):
+            st_x = min(i*x1, w-crop_size)
+            st_y = min(i*y1, h-crop_size)
+            #print(img.size, st_x, st_y, st_x + crop_size, st_y + crop_size)
+            img_p = img.copy()
+            img_p = img_p.crop((st_x, st_y, st_x + crop_size, st_y + crop_size))
+            print(img.size, img_p.size)
+            imgs.append(img_p.resize(self.size, self.interpolation))
+        return np.stack(imgs, axis=0)
+
+    def randomize_parameters(self, c_size=0):
+        pass
+'''
 
 class CornerCrop(object):
 
@@ -404,8 +485,8 @@ class MultiScaleRandomCropMultigrid(object):
         image_width = img.size[0]
         image_height = img.size[1]
 
-        x1 = self.tl_x * (image_width - crop_size)
-        y1 = self.tl_y * (image_height - crop_size)
+        x1 = int(self.tl_x * (image_width - crop_size))
+        y1 = int(self.tl_y * (image_height - crop_size))
         x2 = x1 + crop_size
         y2 = y1 + crop_size
 

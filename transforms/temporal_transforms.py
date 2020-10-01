@@ -91,13 +91,14 @@ class TemporalRandomCrop(object):
         self.size = size
         self.gamma_tau = gamma_tau
 
-    def __call__(self, frame_indices, t_stride=1):
+    def __call__(self, frame_indices, t_stride=1, size=None):
         """
         Args:
             frame_indices (list): frame indices to be cropped.
         Returns:
             list: Cropped frame indices.
         """
+        trunc = size if size is not None else self.size # for multigrid
 
         rand_end = max(0, len(frame_indices) - self.size - 1)
         begin_index = random.randint(0, rand_end)
@@ -105,10 +106,11 @@ class TemporalRandomCrop(object):
         end_index = min(begin_index + self.size, len(frame_indices))
 
         out = frame_indices[begin_index:end_index:t_stride*self.gamma_tau]
-        #print(self.gamma_tau, len(out))
+
+        out = out[:trunc//self.gamma_tau]
 
         for index in out:
-            if len(out) >= self.size//self.gamma_tau:
+            if len(out) >= trunc//self.gamma_tau:
                 break
             out.append(index)
 
