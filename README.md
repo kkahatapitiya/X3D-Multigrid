@@ -18,7 +18,7 @@ Multigrid training is a mechanism to train video architectures efficiently. Inst
 ### Dependencies
 
 - Python 3.7.6
-- PyTorch 1.7.0 (built from source, with fix)
+- PyTorch 1.7.0 (built from source, with [fix](https://github.com/pytorch/pytorch/pull/40801))
 - torchvision 0.8.0 (built from source)
 - pkbar 0.5
 
