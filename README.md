@@ -28,7 +28,7 @@ Note: the Kinetics-400 dataset that we trained on contains ~220k (~240k) trainin
 ### Dependencies
 
 - Python 3.7.6
-- PyTorch 1.7.0 (built from source, with [this fix](https://github.com/pytorch/pytorch/pull/40801))
+- PyTorch 1.7.0 (built from source, with [this fix](https://github.com/pytorch/pytorch/pull/40801)). This issue is fixed in PyTorch >= 1.9 releases.
 - torchvision 0.8.0 (built from source)
 - accimage 0.1.1
 - pkbar 0.5
